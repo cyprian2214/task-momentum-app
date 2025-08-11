@@ -20,6 +20,8 @@ const Index = () => {
   const [description, setDescription] = useState("");
   const [duration, setDuration] = useState<number>(60);
   const [projectCode, setProjectCode] = useState("");
+  const [rangeStart, setRangeStart] = useState<string>(today);
+  const [rangeEnd, setRangeEnd] = useState<string>(today);
 
   useEffect(() => {
     document.title = "Time Tracking Dashboard - Tracker";
@@ -82,6 +84,30 @@ const Index = () => {
     navigate("/auth", { replace: true });
   };
 
+  const handleDownload = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke("download-time-entries-pdf", {
+        body: { start_date: rangeStart, end_date: rangeEnd },
+      });
+      if (error) throw error;
+      const { base64, filename, mimeType } = data as any;
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mimeType || "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || `time-entries-${rangeStart}_to_${rangeEnd}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: "Download ready", description: "Your PDF has been downloaded." });
+    } catch (e: any) {
+      toast({ title: "Download failed", description: e.message, variant: "destructive" as any });
+    }
+  };
   return (
     <main className="min-h-screen bg-background">
       <header className="container mx-auto px-4 py-4 flex items-center justify-between">
@@ -115,8 +141,21 @@ const Index = () => {
               <label htmlFor="desc" className="text-sm font-medium">What did you do?</label>
               <Textarea id="desc" placeholder="Describe your work..." value={description} onChange={(e) => setDescription(e.target.value)} />
             </div>
-            <div className="flex justify-end">
-              <Button onClick={handleAdd}>Add entry</Button>
+            <div className="flex flex-col md:flex-row gap-3 md:items-end md:justify-between">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full md:w-auto">
+                <div className="grid gap-2">
+                  <label htmlFor="range-start" className="text-sm font-medium">From</label>
+                  <Input id="range-start" type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="range-end" className="text-sm font-medium">To</label>
+                  <Input id="range-end" type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end">
+                <Button variant="outline" onClick={handleDownload}>Download PDF</Button>
+                <Button onClick={handleAdd}>Add entry</Button>
+              </div>
             </div>
           </div>
 
