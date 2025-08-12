@@ -111,11 +111,25 @@ const Index = () => {
         body: { start_date: rangeStart, end_date: rangeEnd },
       });
       if (error) throw error;
+
       const { base64, filename, mimeType } = data as any;
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: mimeType || "application/pdf" });
+      if (!base64) throw new Error("No PDF data returned");
+
+      // Decode base64 safely (chunked) to avoid memory issues
+      const b64ToBlob = (b64: string, type = "application/pdf") => {
+        const sliceSize = 1024;
+        const byteChars = atob(b64);
+        const byteArrays: Uint8Array[] = [];
+        for (let offset = 0; offset < byteChars.length; offset += sliceSize) {
+          const slice = byteChars.slice(offset, offset + sliceSize);
+          const byteNumbers = new Array(slice.length);
+          for (let i = 0; i < slice.length; i++) byteNumbers[i] = slice.charCodeAt(i);
+          byteArrays.push(new Uint8Array(byteNumbers));
+        }
+        return new Blob(byteArrays, { type });
+      };
+
+      const blob = b64ToBlob(base64, mimeType || "application/pdf");
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -126,10 +140,22 @@ const Index = () => {
       URL.revokeObjectURL(url);
       toast({ title: "Download ready", description: "Your PDF has been downloaded." });
     } catch (e: any) {
-      toast({ title: "Download failed", description: e.message, variant: "destructive" as any });
+      // Fallback: try opening a data URL if Blob flow fails
+      try {
+        const { data } = await supabase.functions.invoke("download-time-entries-pdf", {
+          body: { start_date: rangeStart, end_date: rangeEnd },
+        });
+        const { base64, filename } = (data || {}) as any;
+        if (base64) {
+          const dataUrl = `data:application/pdf;base64,${base64}`;
+          const win = window.open(dataUrl, "_blank");
+          if (!win) throw e;
+          return;
+        }
+      } catch {}
+      toast({ title: "Download failed", description: e?.message || "Unknown error", variant: "destructive" as any });
     }
   };
-
   const displayName = user?.user_metadata?.full_name || user?.email || "Account";
 
   return (
