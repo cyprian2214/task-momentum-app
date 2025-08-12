@@ -39,73 +39,130 @@ async function fetchEntries(req: Request, start: string, end: string) {
 
 async function buildPdf(entries: Array<any>, start: string, end: string) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]); // A4 portrait in points
+
+  const pageSize: [number, number] = [595.28, 841.89]; // A4
+  let page = pdfDoc.addPage(pageSize);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  let { width, height } = page.getSize();
-  let x = 50;
-  let y = height - 60;
+  // Layout constants
+  const margin = 40;
+  const headerHeight = 56;
+  const rowHeight = 22;
+  const tableTopGap = 18;
+  const tableCols = [100, 140, 70, 210]; // Date, Project, Duration, Description
 
-  const drawText = (text: string, opts: { size?: number; bold?: boolean; color?: any } = {}) => {
-    const size = opts.size ?? 12;
-    const usedFont = opts.bold ? fontBold : font;
-    page.drawText(text, { x, y, size, font: usedFont, color: opts.color ?? rgb(0, 0, 0) });
-    y -= size + 8;
+  const colors = {
+    text: rgb(0.1, 0.1, 0.12),
+    muted: rgb(0.45, 0.45, 0.5),
+    primary: rgb(0.13, 0.2, 0.36),
+    band: rgb(0.93, 0.95, 1.0),
+    border: rgb(0.82, 0.85, 0.9),
+    zebra: rgb(0.97, 0.98, 1.0),
   };
 
-  // Header
-  drawText("Tracker - Time Entries Report", { size: 18, bold: true });
-  drawText(`Date range: ${start} to ${end}`, { size: 12 });
-  y -= 8;
-  page.drawLine({ start: { x, y }, end: { x: width - 50, y }, thickness: 1, color: rgb(0.8, 0.8, 0.8) });
-  y -= 16;
+  let y = page.getSize().height - margin;
 
-  // Table header
-  drawText("Date      | Project | Duration (min)", { bold: true });
-  drawText("Description:");
+  const addHeader = () => {
+    // Brand band
+    page.drawRectangle({ x: 0, y: page.getSize().height - headerHeight, width: page.getSize().width, height: headerHeight, color: colors.band });
+    page.drawText("Tracker — Time Entries Report", { x: margin, y: page.getSize().height - headerHeight + 20, size: 18, font: bold, color: colors.primary });
+    page.drawText(`Date range: ${start} to ${end}`, { x: margin, y: page.getSize().height - headerHeight + 6, size: 11, font, color: colors.muted });
+  };
+
+  const addTableHeader = () => {
+    y = page.getSize().height - headerHeight - tableTopGap;
+    const headers = ["Date", "Project", "Duration", "Description"];
+    let x = margin;
+    headers.forEach((h, i) => {
+      page.drawText(h, { x, y, size: 11, font: bold, color: colors.text });
+      x += tableCols[i];
+    });
+    y -= 8;
+    page.drawLine({ start: { x: margin, y }, end: { x: page.getSize().width - margin, y }, thickness: 1, color: colors.border });
+    y -= 6;
+  };
+
+  const addNewPage = () => {
+    page = pdfDoc.addPage(pageSize);
+    addHeader();
+    addTableHeader();
+  };
+
+  addHeader();
+  addTableHeader();
 
   let total = 0;
 
-  const addPageIfNeeded = () => {
-    if (y < 80) {
-      const newPage = pdfDoc.addPage([595.28, 841.89]);
-      width = newPage.getSize().width;
-      height = newPage.getSize().height;
-      y = height - 60;
-      (page as any) = newPage;
-      // Re-embed fonts for the new page context
-      // Note: pdf-lib embeds fonts in doc scope; reuse refs
-    }
+  const writeWrappedText = (text: string, maxWidth: number, lineHeight: number) => {
+    const words = (text || "").split(/\s+/);
+    const lines: string[] = [];
+    let current = "";
+    words.forEach((w) => {
+      const tentative = current ? current + " " + w : w;
+      const width = font.widthOfTextAtSize(tentative, 11);
+      if (width > maxWidth && current) {
+        lines.push(current);
+        current = w;
+      } else {
+        current = tentative;
+      }
+    });
+    if (current) lines.push(current);
+    return lines;
   };
 
   for (const e of entries) {
-    const dateStr = e.entry_date;
-    const line1 = `${dateStr} | ${e.project_code} | ${e.duration_minutes}`;
+    const hours = Math.floor((e.duration_minutes || 0) / 60);
+    const mins = (e.duration_minutes || 0) % 60;
     total += e.duration_minutes || 0;
 
-    addPageIfNeeded();
-    drawText(line1, { size: 12 });
-    const desc = (e.description || "").toString();
+    const cells = [
+      String(e.entry_date),
+      String(e.project_code || "-"),
+      `${hours}h ${mins}m`,
+      String(e.description || ""),
+    ];
 
-    // Wrap description roughly at 90 chars
-    const wrapAt = 90;
-    let startIdx = 0;
-    while (startIdx < desc.length) {
-      addPageIfNeeded();
-      const chunk = desc.slice(startIdx, startIdx + wrapAt);
-      drawText(chunk, { size: 11, color: rgb(0.2, 0.2, 0.2) });
-      startIdx += wrapAt;
+    // Calculate wrapped description height
+    const descLines = writeWrappedText(cells[3], tableCols[3] - 4, 12);
+    const neededHeight = Math.max(rowHeight, descLines.length * 14);
+
+    if (y - neededHeight < margin + 40) {
+      addNewPage();
     }
 
-    y -= 6;
-    page.drawLine({ start: { x, y }, end: { x: width - 50, y }, thickness: 0.5, color: rgb(0.9, 0.9, 0.9) });
-    y -= 10;
+    // Zebra row
+    page.drawRectangle({ x: margin - 4, y: y - neededHeight + 4, width: page.getSize().width - 2 * (margin - 4), height: neededHeight, color: colors.zebra });
+
+    // Draw cells
+    let x = margin;
+    // Date
+    page.drawText(cells[0], { x, y, size: 11, font, color: colors.text });
+    x += tableCols[0];
+    // Project
+    page.drawText(cells[1], { x, y, size: 11, font, color: colors.text });
+    x += tableCols[1];
+    // Duration
+    page.drawText(cells[2], { x, y, size: 11, font, color: colors.text });
+    x += tableCols[2];
+    // Description (wrapped)
+    let dy = y;
+    descLines.forEach((line) => {
+      page.drawText(line, { x, y: dy, size: 11, font, color: colors.muted });
+      dy -= 14;
+    });
+
+    y -= neededHeight + 6;
   }
 
-  // Summary
-  y -= 10;
-  drawText(`Total minutes: ${total}`, { bold: true });
+  // Summary footer
+  if (y < margin + 40) addNewPage();
+  const totalHours = Math.floor(total / 60);
+  const totalMins = total % 60;
+  page.drawLine({ start: { x: margin, y }, end: { x: page.getSize().width - margin, y }, thickness: 1, color: colors.border });
+  y -= 14;
+  page.drawText(`Total: ${totalHours}h ${totalMins}m (${total} minutes)`, { x: margin, y, size: 12, font: bold, color: colors.primary });
 
   const bytes = await pdfDoc.save();
   const b64 = btoa(String.fromCharCode(...bytes));

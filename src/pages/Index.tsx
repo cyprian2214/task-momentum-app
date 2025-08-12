@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
+import { format, parseISO } from "date-fns";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Calendar as CalendarIcon, ChevronDown, LogOut } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -14,26 +27,32 @@ const Index = () => {
 
   const [sessionReady, setSessionReady] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const [user, setUser] = useState<any>(null);
 
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const [entryDate, setEntryDate] = useState<string>(today);
   const [description, setDescription] = useState("");
-  const [duration, setDuration] = useState<number>(60);
+  const [durationHours, setDurationHours] = useState<number>(1);
+  const [durationMinutes, setDurationMinutes] = useState<number>(0);
   const [projectCode, setProjectCode] = useState("");
   const [rangeStart, setRangeStart] = useState<string>(today);
   const [rangeEnd, setRangeEnd] = useState<string>(today);
 
+  const selectedEntryDate = useMemo(() => parseISO(entryDate), [entryDate]);
+
   useEffect(() => {
     document.title = "Time Tracking Dashboard - Tracker";
     const meta = document.querySelector('meta[name="description"]');
-    if (meta) meta.setAttribute("content", "Track what you worked on today, for how long, and which project code.");
+    if (meta) meta.setAttribute("content", "Track work with hours and minutes, browse past entries, and export professional PDFs.");
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUserId(session?.user?.id ?? null);
+      setUser(session?.user ?? null);
       if (!session) navigate("/auth", { replace: true });
     });
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUserId(session?.user?.id ?? null);
+      setUser(session?.user ?? null);
       if (!session) navigate("/auth", { replace: true });
       setSessionReady(true);
     });
@@ -57,8 +76,9 @@ const Index = () => {
 
   const handleAdd = async () => {
     if (!userId) return;
-    if (!description || !projectCode || !duration) {
-      toast({ title: "Missing info", description: "Please fill description, duration, and project code.", variant: "destructive" as any });
+    const totalMinutes = (Number.isFinite(durationHours) ? durationHours : 0) * 60 + (Number.isFinite(durationMinutes) ? durationMinutes : 0);
+    if (!description || !projectCode || totalMinutes <= 0) {
+      toast({ title: "Missing info", description: "Please fill description, hours/minutes, and project code.", variant: "destructive" as any });
       return;
     }
     const { error } = await supabase.from("time_entries").insert({
@@ -66,14 +86,15 @@ const Index = () => {
       entry_date: entryDate,
       project_code: projectCode,
       description,
-      duration_minutes: duration,
+      duration_minutes: totalMinutes,
     });
     if (error) {
       toast({ title: "Save failed", description: error.message, variant: "destructive" as any });
     } else {
       toast({ title: "Entry saved", description: "Your time entry was recorded." });
       setDescription("");
-      setDuration(60);
+      setDurationHours(1);
+      setDurationMinutes(0);
       setProjectCode("");
       queryClient.invalidateQueries({ queryKey: ["time_entries", userId, entryDate] });
     }
@@ -108,14 +129,31 @@ const Index = () => {
       toast({ title: "Download failed", description: e.message, variant: "destructive" as any });
     }
   };
+
+  const displayName = user?.user_metadata?.full_name || user?.email || "Account";
+
   return (
     <main className="min-h-screen bg-background">
       <header className="container mx-auto px-4 py-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Tracker</h1>
         <nav className="flex items-center gap-3">
-          <Link to="/auth" className="text-sm underline underline-offset-4">Auth</Link>
+          <ThemeToggle />
           {userId && (
-            <Button variant="secondary" onClick={handleLogout}>Logout</Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="secondary" className="inline-flex items-center gap-2">
+                  <span className="max-w-[200px] truncate">{displayName}</span>
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="z-50 bg-popover">
+                <DropdownMenuLabel className="max-w-[260px] truncate">{displayName}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleLogout} className="text-destructive-foreground">
+                  <LogOut className="h-4 w-4 mr-2" /> Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </nav>
       </header>
@@ -125,14 +163,48 @@ const Index = () => {
           <div className="grid gap-4 rounded-lg border bg-card p-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="grid gap-2">
-                <label htmlFor="entry-date" className="text-sm font-medium">Date</label>
-                <Input id="entry-date" type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} />
+                <label className="text-sm font-medium">Date</label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" className="justify-start gap-2">
+                      <CalendarIcon className="h-4 w-4" />
+                      {format(selectedEntryDate, "PPP")}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={selectedEntryDate}
+                      onSelect={(d) => d && setEntryDate(format(d, "yyyy-MM-dd"))}
+                      initialFocus
+                      className="p-3 pointer-events-auto"
+                    />
+                  </PopoverContent>
+                </Popover>
               </div>
               <div className="grid gap-2">
-                <label htmlFor="duration" className="text-sm font-medium">Duration (minutes)</label>
-                <Input id="duration" type="number" min={1} value={duration} onChange={(e) => setDuration(parseInt(e.target.value || "0", 10))} />
+                <label className="text-sm font-medium">Hours</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={durationHours}
+                  onChange={(e) => setDurationHours(Math.max(0, parseInt(e.target.value || "0", 10)))}
+                />
               </div>
               <div className="grid gap-2">
+                <label className="text-sm font-medium">Minutes</label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={durationMinutes}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(59, parseInt(e.target.value || "0", 10)));
+                    setDurationMinutes(v);
+                  }}
+                />
+              </div>
+              <div className="grid gap-2 md:col-span-3">
                 <label htmlFor="project" className="text-sm font-medium">Project code</label>
                 <Input id="project" placeholder="e.g., PROJ-123" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} />
               </div>
@@ -172,7 +244,7 @@ const Index = () => {
                       <span className="text-sm font-medium">{e.project_code}</span>
                     </div>
                     <p className="mt-2">{e.description}</p>
-                    <div className="mt-2 text-sm text-muted-foreground">Duration: {e.duration_minutes} min</div>
+                    <div className="mt-2 text-sm text-muted-foreground">Duration: {Math.floor((e.duration_minutes || 0)/60)}h {(e.duration_minutes || 0)%60}m</div>
                   </article>
                 ))
               ) : (
